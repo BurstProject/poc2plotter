@@ -88,8 +88,8 @@ typedef long sph_s64;
 
 #define NUM_SCOOPS 65536
 
-__kernel void calculate_scoops(unsigned long id, unsigned long start_nonce, unsigned long nonce_2, unsigned long target, __global int* output) {
-	uint gid= get_global_id(0);
+__kernel void first_hash(const unsigned long id, const unsigned long start_nonce, const unsigned long nonce_2, __global unsigned long* output) {
+	uint gid = get_global_id(0);
 	
 	__local sph_u64 H[16];
 	__local sph_u64 g[16], m[16];
@@ -135,44 +135,60 @@ __kernel void calculate_scoops(unsigned long id, unsigned long start_nonce, unsi
 	for (unsigned int u = 0; u < 16; u ++)
 		H[u] ^= xH[u];
 	
-	int scoop = -1;
+	for(unsigned int u = 0; u < 8; u++)
+		output[gid * 8 + u] = H[8 + u];
+
+	barrier(CLK_GLOBAL_MEM_FENCE);
+}
+
+__kernel void calculate_scoops(__global unsigned long* hashes, const unsigned long target, __global int* output) {
+	uint gid = get_global_id(0);
 	
-	if(H[8] < target) {
-		for(unsigned int u = 0; u < 8; u++)
-			m[u] = H[u + 8];
-		
-		m[8] = 0x80;
-		m[9] = 0;
-		m[10] = 0;
-		m[11] = 0;
-		m[12] = 0;
-		m[13] = 0;
-		m[14] = 0;
-		m[15] = 0x0100000000000000;
-		
-		for (unsigned int u = 0; u < 15; u ++)
-			H[u] = 0;
-		
+	__local sph_u64 H[16];
+	__local sph_u64 g[16], m[16];
+	__local sph_u64 xH[16];
+	
+	int scoop;
+	
+	m[0] = hashes[gid * 8];
+	unsigned long valid = (m[0] / target); // >=target -> 0 <target -> 1
+	valid = ((valid + 2) / (valid + 1)) - 1;
+	
+	for(unsigned int u = 1; u < 8; u++)
+		m[u] = hashes[gid * 8 + u];
+	m[8] = 0x80;
+	m[9] = 0;
+	m[10] = 0;
+	m[11] = 0;
+	m[12] = 0;
+	m[13] = 0;
+	m[14] = 0;
+	m[15] = 0x0100000000000000;
+	
+	for (unsigned int u = 0; u < 15; u ++)
+		H[u] = 0;
+	
 #if USE_LE
 		H[15] = ((sph_u64)(512 & 0xFF) << 56) | ((sph_u64)(512 & 0xFF00) << 40);
 #else
 		H[15] = (sph_u64)512;
 #endif
-		
-		for (unsigned int u = 0; u < 16; u ++)
-			g[u] = m[u] ^ H[u];
-		PERM_BIG_P(g);
-		PERM_BIG_Q(m);
-		for (unsigned int u = 0; u < 16; u ++)
-			H[u] ^= g[u] ^ m[u];
-		for (unsigned int u = 0; u < 16; u ++)
-			xH[u] = H[u];
-		PERM_BIG_P(xH);
-		for (unsigned int u = 0; u < 16; u ++)
-			H[u] ^= xH[u];
-		
-		scoop = H[8] % NUM_SCOOPS;
-	}
 	
-	output[gid] = scoop;
+	for (unsigned int u = 0; u < 16; u ++)
+		g[u] = m[u] ^ H[u];
+	PERM_BIG_P(g);
+	PERM_BIG_Q(m);
+	for (unsigned int u = 0; u < 16; u ++)
+		H[u] ^= g[u] ^ m[u];
+	for (unsigned int u = 0; u < 16; u ++)
+		xH[u] = H[u];
+	PERM_BIG_P(xH);
+	for (unsigned int u = 0; u < 16; u ++)
+		H[u] ^= xH[u];
+	
+	scoop = H[8] % NUM_SCOOPS;
+	
+	output[gid] = (scoop + 1) * valid - 1;
+	
+	barrier(CLK_GLOBAL_MEM_FENCE);
 }

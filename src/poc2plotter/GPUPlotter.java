@@ -19,8 +19,9 @@ public class GPUPlotter extends Plotter {
 	cl_context context;
 	cl_command_queue queue[];
 	cl_program program;
-	cl_kernel kernel;
+	cl_kernel kernel[] = new cl_kernel[2];
 	
+	cl_mem hashMem[];
 	cl_mem outMem[];
 	
 	long numWorkItems;
@@ -39,6 +40,7 @@ public class GPUPlotter extends Plotter {
 			deviceId = Integer.parseInt(gpuParams[1]);
 			int threads = Integer.parseInt(gpuParams[2]);
 			outMem = new cl_mem[threads];
+			hashMem = new cl_mem[threads];
 			queue = new cl_command_queue[threads];
 			workSizeMult = Long.parseLong(gpuParams[3]);
 		}
@@ -116,10 +118,11 @@ public class GPUPlotter extends Plotter {
 		program = clCreateProgramWithSource(context, 1, new String[]{kernelSource}, null, null);
 		clBuildProgram(program, 0, null, "-I kernel", null, null);
 		
-		kernel = clCreateKernel(program, "calculate_scoops", null);
+		kernel[0] = clCreateKernel(program, "first_hash", null);
+		kernel[1] = clCreateKernel(program, "calculate_scoops", null);
 		
 		long[] maxWorkGroupSize = new long[1];
-		clGetKernelWorkGroupInfo(kernel, devices[deviceId], CL_KERNEL_WORK_GROUP_SIZE, 8, Pointer.to(maxWorkGroupSize), null);
+		clGetKernelWorkGroupInfo(kernel[0], devices[deviceId], CL_KERNEL_WORK_GROUP_SIZE, 8, Pointer.to(maxWorkGroupSize), null);
 		System.out.println("Max work group size: " + maxWorkGroupSize[0]);
 		
 		long[] maxComputeUnits = new long[1];
@@ -130,15 +133,18 @@ public class GPUPlotter extends Plotter {
 		numNonces = numWorkItems * workSizeMult;
 		
 		for(int i = 0; i < outMem.length; i++) {
+			hashMem[i] = clCreateBuffer(context, CL_MEM_READ_WRITE, 64 * numNonces, null, null);
 			outMem[i] = clCreateBuffer(context, CL_MEM_WRITE_ONLY, 4 * numNonces, null, null);
 		}
 	}
 	
 	private void releaseOCL() {
 		for(int i = 0; i < outMem.length; i++) {
+			clReleaseMemObject(hashMem[i]);
 			clReleaseMemObject(outMem[i]);
 		}
-		clReleaseKernel(kernel);
+		clReleaseKernel(kernel[0]);
+		clReleaseKernel(kernel[1]);
 		clReleaseProgram(program);
 		for(int i = 0; i < queue.length; i++) {
 			clReleaseCommandQueue(queue[i]);
@@ -160,22 +166,29 @@ public class GPUPlotter extends Plotter {
 			long[] nonce2Param = new long[]{nonce2};
 			long[] targetParam = new long[]{target};
 			
-			synchronized(kernel) {
-				clSetKernelArg(kernel, 0, 8, Pointer.to(idParam));
-				clSetKernelArg(kernel, 2, 8, Pointer.to(nonce2Param));
-				clSetKernelArg(kernel, 3, 8, Pointer.to(targetParam));
+			synchronized(kernel[0]) {
+				clSetKernelArg(kernel[0], 0, 8, Pointer.to(idParam));
+				clSetKernelArg(kernel[0], 2, 8, Pointer.to(nonce2Param));
+			}
+			synchronized(kernel[1]) {
+				clSetKernelArg(kernel[1], 1, 8, Pointer.to(targetParam));
 			}
 			
 			long[] startNonceParam = new long[1];
 			int[] resultScoops = null;
 			
 			while(!isComplete()) {
-				synchronized(kernel) {
+				synchronized(kernel[0]) {
 					startNonceParam[0] = nextStartNonce;
 					nextStartNonce += numNonces;
-					clSetKernelArg(kernel, 1, 8, Pointer.to(startNonceParam));
-					clSetKernelArg(kernel, 4, Sizeof.cl_mem, Pointer.to(outMem[num]));
-					clEnqueueNDRangeKernel(queue[num], kernel, 1, null, new long[]{numNonces}, new long[]{1}, 0, null, null);
+					clSetKernelArg(kernel[0], 1, 8, Pointer.to(startNonceParam));
+					clSetKernelArg(kernel[0], 3, Sizeof.cl_mem, Pointer.to(hashMem[num]));
+					clEnqueueNDRangeKernel(queue[num], kernel[0], 1, null, new long[]{numNonces}, new long[]{1}, 0, null, null);
+				}
+				synchronized(kernel[1]) {
+					clSetKernelArg(kernel[1], 0, Sizeof.cl_mem, Pointer.to(hashMem[num]));
+					clSetKernelArg(kernel[1], 2, Sizeof.cl_mem, Pointer.to(outMem[num]));
+					clEnqueueNDRangeKernel(queue[num], kernel[1], 1, null, new long[]{numNonces}, new long[]{1}, 0, null, null);
 				}
 				resultScoops = new int[(int)numNonces];
 				clEnqueueReadBuffer(queue[num], outMem[num], true, 0, numNonces * 4, Pointer.to(resultScoops), 0, null, null);
