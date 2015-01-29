@@ -91,9 +91,35 @@ typedef long sph_s64;
 __kernel void first_hash(const unsigned long id, const unsigned long start_nonce, const unsigned long nonce_2, __global unsigned long* output) {
 	uint gid = get_global_id(0);
 	
-	__local sph_u64 H[16];
-	__local sph_u64 g[16], m[16];
-	__local sph_u64 xH[16];
+	__local sph_u64 T0_C[256], T1_C[256], T2_C[256], T3_C[256];
+	__local sph_u64 T4_C[256], T5_C[256], T6_C[256], T7_C[256];
+	int init = get_local_id(0);
+	int step = get_local_size(0);
+
+	for (int i = init; i < 256; i += step)
+	{
+		T0_C[i] = T0[i];
+		T4_C[i] = T4[i];
+		T1_C[i] = T1[i];
+		T2_C[i] = T2[i];
+		T3_C[i] = T3[i];
+		T5_C[i] = T5[i];
+		T6_C[i] = T6[i];
+		T7_C[i] = T7[i];
+	}
+	barrier(CLK_LOCAL_MEM_FENCE);
+#define T0 T0_C
+#define T1 T1_C
+#define T2 T2_C
+#define T3 T3_C
+#define T4 T4_C
+#define T5 T5_C
+#define T6 T6_C
+#define T7 T7_C
+	
+	sph_u64 H[16];
+	sph_u64 g[16], m[16];
+	sph_u64 xH[16];
 	
 	unsigned long nonce_1 = start_nonce + gid;
 	
@@ -139,14 +165,49 @@ __kernel void first_hash(const unsigned long id, const unsigned long start_nonce
 		output[gid * 8 + u] = H[8 + u];
 
 	barrier(CLK_GLOBAL_MEM_FENCE);
+	
+	#undef T0
+	#undef T1
+	#undef T2
+	#undef T3
+	#undef T4
+	#undef T5
+	#undef T6
+	#undef T7
 }
 
 __kernel void calculate_scoops(__global unsigned long* hashes, const unsigned long target, __global int* output) {
 	uint gid = get_global_id(0);
 	
-	__local sph_u64 H[16];
-	__local sph_u64 g[16], m[16];
-	__local sph_u64 xH[16];
+	__local sph_u64 T0_C[256], T1_C[256], T2_C[256], T3_C[256];
+	__local sph_u64 T4_C[256], T5_C[256], T6_C[256], T7_C[256];
+	int init = get_local_id(0);
+	int step = get_local_size(0);
+
+	for (int i = init; i < 256; i += step)
+	{
+		T0_C[i] = T0[i];
+		T4_C[i] = T4[i];
+		T1_C[i] = T1[i];
+		T2_C[i] = T2[i];
+		T3_C[i] = T3[i];
+		T5_C[i] = T5[i];
+		T6_C[i] = T6[i];
+		T7_C[i] = T7[i];
+	}
+	barrier(CLK_LOCAL_MEM_FENCE);
+#define T0 T0_C
+#define T1 T1_C
+#define T2 T2_C
+#define T3 T3_C
+#define T4 T4_C
+#define T5 T5_C
+#define T6 T6_C
+#define T7 T7_C
+	
+	sph_u64 H[16];
+	sph_u64 g[16], m[16];
+	sph_u64 xH[16];
 	
 	int scoop;
 	

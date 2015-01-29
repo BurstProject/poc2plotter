@@ -70,7 +70,7 @@ public class CPUPlotter extends Plotter {
 					nextPendingNonce += workSize;
 				}
 				try {
-					System.out.println("sleeping");
+					System.out.println("Writing thread sleeping");
 					Thread.sleep(200);
 				} catch (InterruptedException e) {
 					return;

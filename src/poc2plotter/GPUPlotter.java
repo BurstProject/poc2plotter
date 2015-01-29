@@ -7,6 +7,7 @@ import static org.jocl.CL.*;
 import java.io.IOException;
 import java.util.Map;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.jocl.*;
 
@@ -24,12 +25,15 @@ public class GPUPlotter extends Plotter {
 	cl_mem hashMem[];
 	cl_mem outMem[];
 	
+	long workgroupSize[] = new long[2];
+	
 	long numWorkItems;
 	long numNonces;
 	
 	long nextStartNonce = 0;
 	
 	private final Map<Long, int[]> pendingResults = new ConcurrentSkipListMap<>();
+	private final Map<Long, AtomicInteger> processedResults = new ConcurrentSkipListMap<>();
 	
 	GPUPlotter(long id, long nonce2, long nonceSets, long target, String params) {
 		super(id, nonce2, nonceSets, target);
@@ -54,8 +58,11 @@ public class GPUPlotter extends Plotter {
 	void plot() {
 		initOCL();
 		
-		Thread proc = new Thread(this.new GPUProcessor());
-		proc.start();
+		Thread proc[] = new Thread[8];
+		for(int i = 0; i < 8; i++) {
+			proc[i] = new Thread(this.new GPUProcessor(i, 8));
+			proc[i].start();
+		}
 		Thread[] controllers = new Thread[queue.length];
 		for(int i = 0; i < queue.length; i++) {
 			controllers[i] = new Thread(this.new GPUController(i));
@@ -63,7 +70,8 @@ public class GPUPlotter extends Plotter {
 		}
 		
 		try {
-			proc.join();
+			for(int i = 0; i < 8; i++)
+				proc[i].join();
 			for(int i = 0; i < queue.length; i++)
 				controllers[i].join();
 		} catch (InterruptedException e) {
@@ -122,8 +130,11 @@ public class GPUPlotter extends Plotter {
 		kernel[1] = clCreateKernel(program, "calculate_scoops", null);
 		
 		long[] maxWorkGroupSize = new long[1];
-		clGetKernelWorkGroupInfo(kernel[0], devices[deviceId], CL_KERNEL_WORK_GROUP_SIZE, 8, Pointer.to(maxWorkGroupSize), null);
-		System.out.println("Max work group size: " + maxWorkGroupSize[0]);
+		for(int i = 0; i < 2; i++) {
+			clGetKernelWorkGroupInfo(kernel[i], devices[deviceId], CL_KERNEL_WORK_GROUP_SIZE, 8, Pointer.to(maxWorkGroupSize), null);
+			System.out.println("Max work group size: " + maxWorkGroupSize[0]);
+			workgroupSize[i] = maxWorkGroupSize[0];
+		}
 		
 		long[] maxComputeUnits = new long[1];
 		clGetDeviceInfo(devices[deviceId], CL_DEVICE_MAX_COMPUTE_UNITS, 8, Pointer.to(maxComputeUnits), null);
@@ -183,36 +194,66 @@ public class GPUPlotter extends Plotter {
 					nextStartNonce += numNonces;
 					clSetKernelArg(kernel[0], 1, 8, Pointer.to(startNonceParam));
 					clSetKernelArg(kernel[0], 3, Sizeof.cl_mem, Pointer.to(hashMem[num]));
-					clEnqueueNDRangeKernel(queue[num], kernel[0], 1, null, new long[]{numNonces}, new long[]{1}, 0, null, null);
+					clEnqueueNDRangeKernel(queue[num], kernel[0], 1, null, new long[]{numNonces}, new long[]{workgroupSize[0]}, 0, null, null);
 				}
 				synchronized(kernel[1]) {
 					clSetKernelArg(kernel[1], 0, Sizeof.cl_mem, Pointer.to(hashMem[num]));
 					clSetKernelArg(kernel[1], 2, Sizeof.cl_mem, Pointer.to(outMem[num]));
-					clEnqueueNDRangeKernel(queue[num], kernel[1], 1, null, new long[]{numNonces}, new long[]{1}, 0, null, null);
+					clEnqueueNDRangeKernel(queue[num], kernel[1], 1, null, new long[]{numNonces}, new long[]{workgroupSize[1]}, 0, null, null);
 				}
 				resultScoops = new int[(int)numNonces];
 				clEnqueueReadBuffer(queue[num], outMem[num], true, 0, numNonces * 4, Pointer.to(resultScoops), 0, null, null);
+				processedResults.put(startNonceParam[0], new AtomicInteger(0));
 				pendingResults.put(startNonceParam[0], resultScoops);
 				startNonceParam[0] += numNonces;
+				if(pendingResults.size() > 1000) {
+					System.out.println("Waiting for writing threads to catch up");
+					try {
+						Thread.sleep(200);
+					} catch (InterruptedException e) {
+					}
+				}
 			}
 		}
 	}
 	
 	class GPUProcessor implements Runnable {
 
+		final int num;
+		final int outOf;
+		
+		GPUProcessor(int num, int outOf) {
+			this.num = num;
+			this.outOf = outOf;
+		}
+		
 		@Override
 		public void run() {
 			long nextNonce = 0;
 			while(!isComplete()) {
 				
 				while(pendingResults.containsKey(nextNonce)) {
-					processNonces(nextNonce, pendingResults.get(nextNonce));
-					pendingResults.remove(nextNonce);
+					//processNonces(nextNonce, pendingResults.get(nextNonce));
+					int[] scoops = pendingResults.get(nextNonce);
+					for(int i = 0; i < scoops.length; i++) {
+						if(scoops[i] == -1)
+							continue;
+						
+						if(scoops[i] % outOf != num)
+							continue;
+						
+						outBuffers.get(scoops[i]).put(nextNonce + i);
+					}
+					int completed = processedResults.get(nextNonce).incrementAndGet();
+					if(completed == outOf) {
+						pendingResults.remove(nextNonce);
+						processedResults.remove(nextNonce);
+					}
 					nextNonce += numNonces;
 				}
 				
 				try {
-					System.out.println("sleeping");
+					System.out.println("Writing thread " + num + " sleeping");
 					Thread.sleep(200);
 				} catch (InterruptedException e) {
 					return;

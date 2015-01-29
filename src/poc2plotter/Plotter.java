@@ -26,7 +26,7 @@ public abstract class Plotter {
 	protected int scoopsCompleted;
 	
 	private RandomAccessFile outFile;
-	private Map<Integer, OutBuffer> outBuffers = new HashMap<>();
+	protected Map<Integer, OutBuffer> outBuffers = new HashMap<>();
 	
 	Plotter(long id, long nonce2, long nonceSets, long target) {
 		this.id = id;
@@ -155,14 +155,16 @@ public abstract class Plotter {
 		}
 		
 		private void write() {
-			if(buffer.position() % 256 == 0) {
-				System.out.println("Scoop: " + scoop + " pos: " + buffer.position());
-			}
+			/*if(buffer.position() % 512 == 0) {
+				System.out.println("Scoop: " + scoop + " nonces: " + (buffer.position() / 4));
+			}*/
 			if(buffer.position() == BUFFER_SIZE
 					|| buffer.position() + written == scoopSize) {
 				try {
-					outFile.seek(scoop * scoopSize + written);
-					outFile.write(buffer.array(), 0, buffer.position());
+					synchronized(outFile) {
+						outFile.seek(scoop * scoopSize + written);
+						outFile.write(buffer.array(), 0, buffer.position());
+					}
 					written += buffer.position();
 					buffer.clear();
 					if(written == scoopSize) {
@@ -175,5 +177,36 @@ public abstract class Plotter {
 				}
 			}
 		}
+		
+		/*private void print() {
+			if(buffer.position() % 512 == 0) {
+				System.out.println("Scoop: " + scoop + " nonces: " + (buffer.position() / 4));
+			}
+		}
+		
+		private void doStuff() {
+			if(buffer.position() == BUFFER_SIZE
+					|| buffer.position() + written == scoopSize) {
+				try {
+					doWrite();
+				} catch (IOException e) {
+					e.printStackTrace();
+					throw new RuntimeException("Failed to write plot data", e);
+				}
+			}
+		}
+		
+		private void doWrite() throws IOException {
+			synchronized(outFile) {
+				outFile.seek(scoop * scoopSize + written);
+				outFile.write(buffer.array(), 0, buffer.position());
+				written += buffer.position();
+				buffer.clear();
+				if(written == scoopSize) {
+					complete = true;
+					scoopsCompleted++;
+				}
+			}
+		}*/
 	}
 }
